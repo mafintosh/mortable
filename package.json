@@ -1,0 +1,26 @@
+{
+  "name": "mortable",
+  "version": "0.0.0",
+  "description": "in memory replicate p2p data structure",
+  "main": "index.js",
+  "dependencies": {
+    "duplexify": "^3.0.1",
+    "hat": "^0.0.3",
+    "ldjson-stream": "^1.1.0",
+    "pump": "^0.3.5"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mafintosh/mortable"
+  },
+  "author": "Mathias Buus",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mafintosh/mortable/issues"
+  },
+  "homepage": "https://github.com/mafintosh/mortable"
+}
