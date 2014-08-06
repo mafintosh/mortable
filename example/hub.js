@@ -45,7 +45,7 @@ var server = net.createServer(function(socket) {
 })
 
 server.listen(parseInt(listen), function() {
-  console.log('hub is listening on port %d', server.address().port)
+  console.log('hub is listening on port %s:%d', network(), server.address().port)
   table.push('hubs', me = network()+':'+server.address().port)
 })
 
