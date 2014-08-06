@@ -1,162 +1,221 @@
-var hat = require('hat')
-var ldjson = require('ldjson-stream')
-var duplexify = require('duplexify')
+var protobufs = require('protocol-buffers-stream')
+var once = require('once')
+var fs = require('fs')
+var cuid = require('cuid')
 var events = require('events')
 var util = require('util')
 
-var Mortable = function() {
-  if (!(this instanceof Mortable)) return new Mortable()
+var createStream = protobufs(fs.readFileSync(require.resolve('./schema.proto')))
+
+// op enum
+
+var PUSH = 1
+var PULL = 2
+var HEARTBEAT = 3
+var FIN = 4
+
+var toArray = function(map) {
+  return Object.keys(map).map(function(key) {
+    return map[key]
+  })
+}
+
+var Peer = function(id) {
+  this.id = id
+  this.seq = 0
+  this.heartbeat = 0
+  this.changes = []
+
+  this._sets = {}
+}
+
+Peer.prototype.push = function(key, val) {
+  var set = this._sets[key]
+  if (!set) set = this._sets[key] = []
+  if (set.indexOf(key) === -1) set.push(val)
+}
+
+Peer.prototype.pull = function(key, val) {
+  var set = this._sets[key] || []
+  var i = set.indexOf(val)
+  if (i === -1) return
+
+  if (set.length === 1) delete this._sets[key]
+  else set.splice(i, 1)
+}
+
+Peer.prototype.list = function(key) {
+  return key === undefined ? Object.keys(this._sets) : (this._sets[key] || null)
+}
+
+var Mortable = function(id) {
+  if (!(this instanceof Mortable)) return new Mortable(id)
   events.EventEmitter.call(this)
 
-  this.id = hat(64)
+  this.id = id || cuid()
+  this.peers = {}
+  this.seq = 0
+  this.heartbeat = 0
+  this.streams = []
+  this.changes = []
 
-  this._head = 0
-  this._peers = []
+  var self = this
+  var update = function() {
+    self.heartbeat++
+  }
 
-  this._handshake = {}
-  this._changes = []
-  this._table = {}
-  this._owns = {}
-
-  this._reads = []
+  this.interval = setInterval(update, 10000)
+  if (this.interval.unref) this.interval.unref()
 }
 
 util.inherits(Mortable, events.EventEmitter)
 
-Mortable.prototype.createWriteStream = function() {
-  var self = this
-  return ldjson.parse()
-    .on('data', function(change) {
-      self._update(change)
-    })
-    .on('finish', function() {
-      self.emit('sync')
-    })
-}
-
-Mortable.prototype.createReadStream = function() {
-  var serialize = ldjson.serialize()
-  var self = this
-
-  serialize.destroy = function() {
-    var i = self._reads.indexOf(serialize)
-    if (i === -1) return
-    self._reads.splice(i, 1)
-    serialize.emit('close')
+Mortable.prototype.destroy = function() {
+  clearInterval(this.interval)
+  this._change(FIN, null, null)
+  for (var i = 0; i < this.streams.length; i++) {
+    this.streams[i].finalize()
   }
-
-  for (var i = 0; i < this._changes.length; i++) {
-    if (this._changes[i].id !== this.id) serialize.write(this._changes[i])
-  }
-  this._reads.push(serialize)
-
-  return serialize
 }
 
-Mortable.prototype.owns = function(key, value) {
-  return this._owns[key+'@'+value]
+Mortable.prototype.push = function(key, val) {
+  this._change(PUSH, key, val)
 }
 
-Mortable.prototype.push = function(key, value) {
-  var id = key+'@'+value
-  if (this._owns[id]) return
-  this._owns[id] = true
-  this._change('push', key, value)
-}
-
-Mortable.prototype.pull = function(key, value) {
-  var id = key+'@'+value
-  if (!this._owns[id]) return
-  delete this._owns[id]
-  this._change('pull', key, value)
-}
-
-Mortable.prototype.keys = function() {
-  return Object.keys(this._table)
-}
-
-Mortable.prototype.has = function(key, value) {
-  return !!this._table[key] && (arguments.length === 1 || this._table[key].indexOf(value) > -1)
+Mortable.prototype.pull = function(key, val) {
+  this._change(PULL, key, val)
 }
 
 Mortable.prototype.list = function(key) {
-  return this._table[key]
+  var list = Object.keys(this.peers)
+  var result = {}
+  for (var i = 0; i < list.length; i++) {
+    var p = this.peers[list[i]]
+    if (!p || p.heartbeat <= this.heartbeat) continue
+    var l = p.list(key)
+    if (!l) continue
+    for (var j = 0; j < l.length; j++) result[l[j]] = true
+  }
+  return Object.keys(result)
 }
 
-Mortable.prototype._change = function(type, key, value) {
-  this._update({type:type, id:this.id, change:++this._head, key:key, value:value})
+Mortable.prototype._change = function(op, key, val) {
+  this._update({op:op, seq:++this.seq, from:this.id, key:key, value:val}, null)
 }
 
-Mortable.prototype._update = function(change) {
-  this._handshake[change.id] = change.change
-  this._changes.push(change)
+Mortable.prototype._update = function(change, stream) {
+  var p = this.peers[change.from]
+  if (p === null) return // was permanently deleted
+  if (!p) p = this.peers[change.from] = new Peer(change.from)
 
-  var t = this._table[change.key]
+  if (p.seq >= change.seq) return
+  p.seq = change.seq
 
-  if (change.type === 'push') {
-    if (!t) t = this._table[change.key] = []
-    t.push(change.value)
-    this.emit('push', change.key, change.value)
+  switch (change.op) {
+    case PUSH:
+    p.push(change.key, change.value)
+    this.emit('push', change.key, change.value, change.from)
+    this.emit('update', change.key, change.value)
+    this.changes.push(change)
+    break
+
+    case PULL:
+    p.pull(change.key, change.value)
+    this.emit('pull', change.key, change.value, change.from)
+    this.emit('update', change.key, change.value)
+    this.changes.push(change)
+    break
+
+    case HEARTBEAT:
+    p.heartbeat = this.heartbeat+2
+    break
+
+    case FIN:
+    this.peers[p.id] = null
+    this.changes = this.changes.filter(function(change) {
+      return change.from !== p.id
+    })
+    break
+
+    default:
+    return
   }
-  if (change.type === 'pull') {
-    var i = t.indexOf(change.value)
-    if (i > -1) t.splice(i, 1)
-    if (!t.length) delete this._table[change.key]
-    this.emit('pull', change.key, change.value)
-  }
 
-  this.emit('update', change.key, change.value)
-
-  for (var i = 0; i < this._peers.length; i++) {
-    var pair = this._peers[i]
-    var handshake = pair[0]
-    var peer = pair[1]
-
-    if (handshake[change.id] >= change.change) continue
-    handshake[change.id] = change.change
-    peer.write(change)
-  }
-
-  if (change.id === this.id) return
-
-  for (var i = 0; i < this._reads.length; i++) {
-    this._reads[i].write(change)
+  for (var i = 0; i < this.streams.length; i++) {
+    if (this.streams[i] !== stream) this.streams[i].change(change)
   }
 }
 
 Mortable.prototype.createStream = function() {
-  var serialize = ldjson.serialize()
-  var parse = ldjson.parse()
-
-  var dup = duplexify.obj(parse, serialize)
+  var s = createStream()
   var self = this
 
-  parse.once('data', function(handshake) {
-    var pair = [handshake, serialize]
+  var heartbeat = function() {
+    self._change(HEARTBEAT, null, null)
+  }
 
-    self._peers.push(pair)
-    dup.once('close', function() {
-      self._peers.splice(self._peers.indexOf(pair), 1)
+  s.once('handshake', function(handshake) {
+    var interval = setInterval(heartbeat, 5000)
+    if (interval.unref) interval.unref()
+
+    var cleanup = once(function() {
+      clearInterval(interval)
+      self.streams.splice(self.streams.indexOf(s), 1)
     })
 
-    for (var i = 0; i < self._changes.length; i++) {
-      var change = self._changes[i]
-      var since = handshake[change.id] || 0
+    s.on('close', cleanup).on('finish', cleanup).on('end', cleanup)
 
-      if (since >= change.change) continue
-      handshake[change.id] = change.change
-      serialize.write(change)
+    s.on('heartbeat', function(heartbeat) {
+      var p = self.peers[heartbeat.from]
+      if (p && heartbeat.seq >= p.seq) p.heartbeat = self.heartbeat+1
+    })
+
+    s.on('change', function(change) {
+      self._update(change, s)
+    })
+
+    // index seqs
+    var seqs = handshake.peers.reduce(function(result, peer) {
+      result[peer.id] = peer.seq
+      return result
+    }, {})
+
+    // send local changes to the remote
+    for (var i = 0; i < self.changes.length; i++) {
+      var change = self.changes[i]
+      var seq = seqs[change.from] || 0
+      if (change.seq > seq) s.change(change)
     }
 
-    parse.on('data', function(change) {
-      handshake[change.id] = change.change
-      self._update(change)
-    })
+    self.streams.push(s)
+    heartbeat()
   })
 
-  serialize.write(this._handshake)
+  s.handshake({
+    from: this.id,
+    peers: toArray(this.peers)
+  })
 
-  return dup
+  return s
 }
 
 module.exports = Mortable
+
+if (require.main !== module) return
+
+var m1 = Mortable('peer1')
+var m2 = Mortable('peer2')
+
+m1.push('hi', 'world')
+m1.push('hi', 'der der')
+
+var s1 = m1.createStream()
+var s2 = m2.createStream()
+
+s1.pipe(s2).pipe(s1)
+
+setImmediate(function() {
+  console.log(m2.list('hi'))
+  m1.destroy()
+  console.log(m2.list('hi'))
+}, 100)

@@ -1,0 +1,25 @@
+enum OP {
+  PUSH = 1;
+  PULL = 2;
+  HEARTBEAT = 3;
+  FIN = 4;
+}
+
+
+message Change {
+  required uint32 seq = 1;
+  required uint32 op = 2;
+  required string from = 3;
+  optional string key = 4;
+  optional string value = 5;
+}
+
+message Handshake {
+  message Peer {
+    required uint32 seq = 1;
+    required string id = 2;
+  }
+
+  required string from = 1;
+  repeated Peer peers = 2;
+}
