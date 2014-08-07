@@ -6,10 +6,12 @@ In memory eventual consistant replicatable p2p data structure
 npm install mortable
 ```
 
+[![build status](http://img.shields.io/travis/mafintosh/mortable.svg?style=flat)](http://travis-ci.org/mafintosh/mortable)
+
 Mortable is for sharing data that is only valid as long as your process is alive and small
 enough to fit in memory (think hostnames+ports for a distributed service registry)
 
-Data will be replicated to other nodes using the scuttlebutt protocol
+Data will be replicated to other nodes using protobuf messages and the scuttlebutt protocol
 
 ## Usage
 
