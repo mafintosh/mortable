@@ -68,6 +68,7 @@ tape('two instances + no timeout', function(t) {
     }, 500)
   })
 })
+
 tape('two instances + timeout', function(t) {
   var m1 = mortable({ttl:100})
   var m2 = mortable()
@@ -87,5 +88,27 @@ tape('two instances + timeout', function(t) {
       t.same(m1.list('hello'), ['world'])
       t.end()
     }, 500)
+  })
+})
+
+tape('two instances + destroy', function(t) {
+  var m1 = mortable()
+  var m2 = mortable()
+
+  m1.push('hello', 'world')
+  m2.push('hello', 'welt')
+
+  var s1 = m1.createStream()
+  var s2 = m2.createStream()
+
+  s1.pipe(s2).pipe(s1)
+
+  setImmediate(function() {
+    t.same(m2.list('hello').sort(), ['welt', 'world'])
+    m2.destroy()
+    setImmediate(function() {
+      t.same(m1.list('hello'), ['world'])
+      t.end()
+    })
   })
 })

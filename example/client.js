@@ -14,17 +14,19 @@ if (!host || !port) return console.error('Usage: ./client.js host:port')
 
 var connect = function(port, host) {
   var socket = net.connect(port, host)
+  var alive = false
 
   socket.on('error', function() {
     socket.destroy()
   })
 
   socket.on('connect', function() {
+    alive = true
     console.log('(connected to %s:%d)', host, port)
   })
 
   socket.on('close', function() {
-    console.log('(disconnected from %s:%d)', host, port)
+    if (alive) console.log('(disconnected from %s:%d)', host, port)
     setTimeout(function() {
       connect(port, host)
     }, 5000)
