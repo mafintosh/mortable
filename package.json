@@ -1,7 +1,7 @@
 {
   "name": "mortable",
   "version": "0.1.0",
-  "description": "in memory replicate p2p data structure",
+  "description": "In memory eventual consistant distributed data structure",
   "main": "index.js",
   "dependencies": {
     "cuid": "^1.2.4",
