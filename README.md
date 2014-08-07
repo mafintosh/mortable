@@ -1,6 +1,6 @@
 # mortable
 
-In memory eventual consistant replicatable p2p data structure
+In memory eventual consistant distributed data structure
 
 ```
 npm install mortable
