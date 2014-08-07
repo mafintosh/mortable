@@ -11,10 +11,11 @@
   "devDependencies": {
     "hprotocol": "^0.5.0",
     "network-address": "0.0.4",
-    "pump": "^0.3.5"
+    "pump": "^0.3.5",
+    "tape": "^2.14.0"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tape test.js"
   },
   "repository": {
     "type": "git",
