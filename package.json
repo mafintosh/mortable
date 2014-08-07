@@ -1,6 +1,6 @@
 {
   "name": "mortable",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "in memory replicate p2p data structure",
   "main": "index.js",
   "dependencies": {
