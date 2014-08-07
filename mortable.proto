@@ -1,0 +1,23 @@
+enum OP {
+  PUSH = 1;
+  PULL = 2;
+  HEARTBEAT = 3;
+  QUIT = 4;
+}
+
+message Change {
+  required OP op = 1;
+  required string peer = 2;
+  required uint32 seq = 3;
+  optional string key = 4;
+  optional string value = 5;
+}
+
+message Sync {
+  message Peer {
+    required string id = 1;
+    required uint32 seq = 2;
+  }
+
+  repeated Peer peers = 1;
+}
