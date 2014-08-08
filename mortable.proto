@@ -24,5 +24,6 @@ message Sync {
     required uint32 seq = 2;
   }
 
+  required string id = 2;
   repeated Peer peers = 1;
 }

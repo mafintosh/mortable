@@ -249,6 +249,7 @@ Mortable.prototype.createStream = function() {
   var s = createStream()
 
   s.sync({
+    id: this.id,
     peers: toArray(this._peers)
   })
 
