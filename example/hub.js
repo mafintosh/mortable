@@ -51,8 +51,12 @@ server.listen(parseInt(listen), function() {
   table.push('hubs', me = network()+':'+server.address().port)
 })
 
-table.on('push', function(key, addr) {
-  if (key === 'hubs' && addr !== me) connect(addr.split(':')[1], addr.split(':')[0])
+table.on('change', function(key) {
+  if (key !== 'hubs') return
+  var hubs = table.list('hubs') || []
+  hubs.forEach(function(addr) {
+    connect(addr.split(':')[1], addr.split(':')[0])
+  })
 })
 
 if (port) connect(port, host)
