@@ -273,10 +273,12 @@ Mortable.prototype.createStream = function() {
 
     s.on('bulk', function(bulk) {
       self._applyAll(s, bulk.changes)
+      onalive()
     })
 
     s.on('change', function(change) {
       self._apply(s, change)
+      onalive()
     })
 
     var alive = true
