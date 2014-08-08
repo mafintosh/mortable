@@ -200,11 +200,13 @@ Mortable.prototype._change = function(op, key, value) {
 
 Mortable.prototype._update = function(from, change) {
   var peer = this._peers[change.peer] || (this._peers[change.peer] = new Peer(change.peer))
-  if (!peer.update(change, this)) return
+  if (!peer.update(change, this)) return false
 
   for (var i = 0; i < this._streams.length; i++) {
     if (this._streams[i] !== from) this._streams[i].change(change)
   }
+
+  return true
 }
 
 Mortable.prototype._addStream = function(stream, ondone) {
@@ -236,7 +238,7 @@ Mortable.prototype._applyAll = function(from, changes) {
   }
 
   var keys = Object.keys(set)
-  for (var i = 0; i < keys.length; i++) this.emit('change', keys[i])
+  for (var i = 0; i < keys.length; i++) this.emit('update', keys[i])
 }
 
 var addSeq = function(result, peer) {
