@@ -1,6 +1,6 @@
 {
   "name": "mortable",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "In memory eventual consistant distributed data structure",
   "main": "index.js",
   "dependencies": {
