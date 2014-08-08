@@ -2,6 +2,7 @@ var cuid = require('cuid')
 var protobufs = require('protocol-buffers-stream')
 var once = require('once')
 var util = require('util')
+var EventEmitter = require('events').EventEmitter
 var fs = require('fs')
 
 var createStream = protobufs(fs.readFileSync(require.resolve('./mortable.proto')))
@@ -20,7 +21,7 @@ var toArray = function(map) {
 var Peer = function(id) {
   this.id = id
   this.seq = 0
-  this.heartbeat = 0
+  this.updated = 0
   this.changes = []
   this.values = {}
 }
@@ -49,13 +50,9 @@ Peer.prototype.list = function(key) {
 
 Peer.prototype.update = function(change, table) {
   if (change.seq < this.seq) return false
-  this.seq = change.seq
 
-  // do not record heartbeat messages
-  if (change.op === HEARTBEAT) {
-    this.heartbeat = table._tick+1
-    return true
-  }
+  this.seq = change.seq
+  this.updated = change.timestamp
 
   switch (change.op) {
     case PUSH:
@@ -67,14 +64,20 @@ Peer.prototype.update = function(change, table) {
     break
 
     case QUIT:
-    this.heartbeat = 0
+    this.values = {}
+    this.updated = 0
     this.changes = []
+    break
+
+    case HEARTBEAT:
     break
 
     default:
     return false
   }
 
+  // trim heartbeats from the log
+  if (this.changes.length && this.changes[this.changes.length-1].op === HEARTBEAT) this.changes.pop()
   this.changes.push(change)
 
   return true
@@ -84,23 +87,25 @@ var Mortable = function(opts) {
   if (!(this instanceof Mortable)) return new Mortable(opts)
   if (!opts) opts = {}
 
+  EventEmitter.call(this)
+
   this.ttl = opts.ttl || 10000
   this.id = opts.id || cuid()
 
   var self = this
   var tick = function() {
-    self._tick++
     self.heartbeat()
   }
 
-  this._tick = 1
   this._peers = {}
   this._local = this._peers[this.id] = new Peer(this.id)
-  this._interval = setInterval(tick, (this.ttl / 2) | 0)
+  this._heartbeat = setInterval(tick, (this.ttl / 2) | 0)
   this._streams = []
 
-  if (this._interval.unref) this._interval.unref()
+  if (this._heartbeat.unref) this._heartbeat.unref()
 }
+
+util.inherits(Mortable, EventEmitter)
 
 Mortable.prototype.has = function(key) {
   var ids = Object.keys(this._peers)
@@ -113,12 +118,13 @@ Mortable.prototype.has = function(key) {
 }
 
 Mortable.prototype.list = function(key) {
-  var set = arguments.length === 0 ? {} : null
+  var set = key === undefined ? {} : null
   var ids = Object.keys(this._peers)
+  var now = Date.now()
 
   for (var i = 0; i < ids.length; i++) {
     var p = this._peers[ids[i]]
-    if (p !== this._local && p.heartbeat < this._tick) continue
+    if (p !== this._local && p.updated + this.ttl < now) continue
 
     var list = p.list(key)
 
@@ -132,44 +138,63 @@ Mortable.prototype.list = function(key) {
 }
 
 Mortable.prototype.destroy = function() {
-  clearInterval(this._interval)
+  clearInterval(this._heartbeat)
 
-  this._update(null, {
-    op: QUIT,
-    peer: this.id,
-    seq: this._local.seq+1
-  })
+  this._change(QUIT, null, null)
 
   for (var i = 0; i < this._streams.length; i++) {
     this._streams[i].finalize()
   }
 }
 
-Mortable.prototype.push = function(key, value) {
-  this._update(null, {
-    op: PUSH,
-    peer: this.id,
-    seq: this._local.seq+1,
-    key: key,
-    value: value
+Mortable.prototype.createWriteStream = function() {
+  var s = createStream()
+  var self = this
+
+  s.on('bulk', function(bulk) {
+    self._applyAll(s, bulk.changes)
   })
+
+  s.on('change', function(change) {
+    self._apply(s, change)
+  })
+
+  return s
+}
+
+Mortable.prototype.createReadStream = function() {
+  var s = createStream()
+  var self = this
+  var peers = toArray(this._peers)
+
+  for (var i = 0; i < peers.length; i++) {
+    var p = peers[i]
+    for (var j = 0; j < p.changes.length; j++) s.change(p.changes[j])
+  }
+
+  return this._addStream(s)
+}
+
+Mortable.prototype.push = function(key, value) {
+  this._change(PUSH, key, value)
 }
 
 Mortable.prototype.pull = function(key, value) {
-  this._update(null, {
-    op: PULL,
-    peer: this.id,
-    seq: this._local.seq+1,
-    key: key,
-    value: value
-  })
+  this._change(PULL, key, value)
 }
 
 Mortable.prototype.heartbeat = function() {
-  this._update(null, {
-    op: HEARTBEAT,
+  this._change(HEARTBEAT, null, null)
+}
+
+Mortable.prototype._change = function(op, key, value) {
+  this._apply(null, {
+    op: op,
+    seq: this._local.seq+1,
+    timestamp: Date.now(),
     peer: this.id,
-    seq: this._local.seq+1
+    key: key,
+    value: value
   })
 }
 
@@ -180,6 +205,37 @@ Mortable.prototype._update = function(from, change) {
   for (var i = 0; i < this._streams.length; i++) {
     if (this._streams[i] !== from) this._streams[i].change(change)
   }
+}
+
+Mortable.prototype._addStream = function(stream) {
+  var self = this
+
+  var cleanup = once(function() {
+    var i = self._streams.indexOf(stream)
+    if (i > -1) self._streams.splice(i, 1)
+  })
+
+  stream.on('close', cleanup).on('end', cleanup).on('finish', cleanup)
+  this._streams.push(stream)
+
+  return stream
+}
+
+Mortable.prototype._apply = function(from, change) {
+  if (!this._update(from, change)) return
+  if (change.key) this.emit('update', change.key)
+}
+
+Mortable.prototype._applyAll = function(from, changes) {
+  var set = {}
+
+  for (var i = 0; i < changes.length; i++) {
+    if (!this._update(from, changes[i])) continue
+    if (changes[i].key) set[changes[i].key] = true
+  }
+
+  var keys = Object.keys(set)
+  for (var i = 0; i < keys.length; i++) this.emit('change', keys[i])
 }
 
 var addSeq = function(result, peer) {
@@ -207,42 +263,29 @@ Mortable.prototype.createStream = function() {
     for (var i = 0; i < peers.length; i++) {
       var p = peers[i]
       var seq = seqs[p.id] || 0
+      var changes = []
 
       for (var j = 0; j < p.changes.length; j++) {
-        if (p.changes[j].seq > seq) s.change(p.changes[j])
+        if (p.changes[j].seq > seq) changes.push(p.changes[j])
       }
+
+      s.bulk({changes:changes})
     }
 
     s.on('finish', cleanup).on('end', cleanup).on('close', cleanup)
 
-    s.on('change', function(change) {
-      self._update(s, change)
+    s.on('bulk', function(bulk) {
+      self._applyAll(s, bulk.changes)
     })
 
-    self._streams.push(s)
-    self.heartbeat() // we send a heartbeat to indicate that we are alive
+    s.on('change', function(change) {
+      self._apply(s, change)
+    })
+
+    self._addStream(s)
   })
 
   return s
 }
 
 module.exports = Mortable
-
-if (require.main !== module) return
-
-var m = Mortable()
-var s = Mortable()
-
-m.push('hello', 'world')
-m.push('hello', 'verden')
-
-var ms = m.createStream()
-
-ms.pipe(s.createStream()).pipe(ms)
-
-setImmediate(function() {
-  console.log(s.list())
-  console.log(s.list('hello'))
-})
-
-//console.log(m.has('hello1'), m.list('hello1'))
