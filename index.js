@@ -207,12 +207,13 @@ Mortable.prototype._update = function(from, change) {
   }
 }
 
-Mortable.prototype._addStream = function(stream) {
+Mortable.prototype._addStream = function(stream, ondone) {
   var self = this
 
   var cleanup = once(function() {
     var i = self._streams.indexOf(stream)
     if (i > -1) self._streams.splice(i, 1)
+    if (ondone) ondone()
   })
 
   stream.on('close', cleanup).on('end', cleanup).on('finish', cleanup)
@@ -255,11 +256,6 @@ Mortable.prototype.createStream = function() {
     var seqs = sync.peers.reduce(addSeq, {})
     var peers = toArray(self._peers)
 
-    var cleanup = once(function() {
-      var i = self._streams.indexOf(s)
-      if (i > -1) self._streams.splice(i, 1)
-    })
-
     for (var i = 0; i < peers.length; i++) {
       var p = peers[i]
       var seq = seqs[p.id] || 0
@@ -272,8 +268,6 @@ Mortable.prototype.createStream = function() {
       s.bulk({changes:changes})
     }
 
-    s.on('finish', cleanup).on('end', cleanup).on('close', cleanup)
-
     s.on('bulk', function(bulk) {
       self._applyAll(s, bulk.changes)
     })
@@ -282,7 +276,23 @@ Mortable.prototype.createStream = function() {
       self._apply(s, change)
     })
 
-    self._addStream(s)
+    var alive = true
+
+    var tick = function() {
+      if (!alive) s.destroy()
+      else alive = false
+    }
+
+    var onalive = function() {
+      alive = true
+    }
+
+    var ticker = setInterval(tick, (self.ttl / 2) | 0)
+    if (ticker.unref) ticker.unref()
+
+    self._addStream(s, function() {
+      clearInterval(ticker)
+    })
   })
 
   return s
