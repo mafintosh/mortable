@@ -1,8 +1,6 @@
 var cuid = require('cuid')
 var protobufs = require('protocol-buffers-stream')
 var once = require('once')
-var util = require('util')
-var EventEmitter = require('events').EventEmitter
 var fs = require('fs')
 
 var createStream = protobufs(fs.readFileSync(require.resolve('./mortable.proto')))
@@ -87,8 +85,6 @@ var Mortable = function(opts) {
   if (!(this instanceof Mortable)) return new Mortable(opts)
   if (!opts) opts = {}
 
-  EventEmitter.call(this)
-
   this.ttl = opts.ttl || 10000
   this.id = opts.id || cuid()
 
@@ -104,8 +100,6 @@ var Mortable = function(opts) {
 
   if (this._heartbeat.unref) this._heartbeat.unref()
 }
-
-util.inherits(Mortable, EventEmitter)
 
 Mortable.prototype.has = function(key) {
   var ids = Object.keys(this._peers)
@@ -152,11 +146,11 @@ Mortable.prototype.createWriteStream = function() {
   var self = this
 
   s.on('bulk', function(bulk) {
-    self._applyAll(s, bulk.changes)
+    self._updateAll(s, bulk.changes)
   })
 
   s.on('change', function(change) {
-    self._apply(s, change)
+    self._update(s, change)
   })
 
   return s
@@ -188,7 +182,7 @@ Mortable.prototype.heartbeat = function() {
 }
 
 Mortable.prototype._change = function(op, key, value) {
-  this._apply(null, {
+  this._update(null, {
     op: op,
     seq: this._local.seq+1,
     timestamp: Date.now(),
@@ -209,6 +203,10 @@ Mortable.prototype._update = function(from, change) {
   return true
 }
 
+Mortable.prototype._updateAll = function(from, changes) {
+  for (var i = 0; i < changes.length; i++) this._update(from, changes[i])
+}
+
 Mortable.prototype._addStream = function(stream, ondone) {
   var self = this
 
@@ -222,23 +220,6 @@ Mortable.prototype._addStream = function(stream, ondone) {
   this._streams.push(stream)
 
   return stream
-}
-
-Mortable.prototype._apply = function(from, change) {
-  if (!this._update(from, change)) return
-  if (change.key) this.emit('update', change.key)
-}
-
-Mortable.prototype._applyAll = function(from, changes) {
-  var set = {}
-
-  for (var i = 0; i < changes.length; i++) {
-    if (!this._update(from, changes[i])) continue
-    if (changes[i].key) set[changes[i].key] = true
-  }
-
-  var keys = Object.keys(set)
-  for (var i = 0; i < keys.length; i++) this.emit('update', keys[i])
 }
 
 var addSeq = function(result, peer) {
@@ -272,12 +253,12 @@ Mortable.prototype.createStream = function() {
     }
 
     s.on('bulk', function(bulk) {
-      self._applyAll(s, bulk.changes)
+      self._updateAll(s, bulk.changes)
       onalive()
     })
 
     s.on('change', function(change) {
-      self._apply(s, change)
+      self._update(s, change)
       onalive()
     })
 
